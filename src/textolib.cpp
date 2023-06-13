@@ -350,6 +350,7 @@ Message parseMessages(char* in) {
 }
 
 // populate list of messages based on response of AT+CGML="ALL"
+// this will probably leak if called more than once...
 uint8_t textolib::getMessages(const char* group, const char* expected_answer, Message** messagebuffer, unsigned int messagecount, unsigned int timeout) {
     
     int previous,
@@ -361,57 +362,53 @@ uint8_t textolib::getMessages(const char* group, const char* expected_answer, Me
 
     in = (char*)malloc(RECORD_LENGTH * sizeof(char));
 
-    messagebuffer = (Message**)malloc(sizeof(Message) * messagecount); // allocate message stack
+    if(messagebuffer == NULL) {
+        messagebuffer = (Message**)malloc(sizeof(Message) * messagecount); // allocate message list
+    }
+
     while( SoftSerial.available() > 0) SoftSerial.read();    // Clean the input buffer
+
     SoftSerial.println("AT+CMGL=\"ALL\"");    // Send the AT command    
     
     previous = millis();
-
-    if(messagebuffer != NULL) {
-        Serial.println("messagebuffer initted");
-        do{
-            if(SoftSerial.available() > 0){    
-                // if there are data in the UART input buffer, reads it and checks for the asnwer
-                next = SoftSerial.read();
-                if(next == '+' && x > 12) {
-                    // god this condition is ugly need a better delimiter than "+"
-                    char temp[RECORD_LENGTH];
-                    strcpy(temp, in);
-                    Message *msg = new Message();
-                    msg->index = msgindex;
-                    msg->body = temp;
-                    x = 0;
-                    in[x] = '\0';
-                    messagebuffer[msgindex] = msg;
-                    msgindex++;
-                    /*
-                    Serial.print("new record [");
-                    Serial.print(msg->index);
-                    Serial.print("] = ");
-                    Serial.print(msg->body);
-                    */
-                } else {
-                    x++;
-                }
-                in[x] = next;
-                in[x+1] = '\0';
-                //strcat(in, (const char*)next);
-                if((answer == 0) && (strstr(in, expected_answer) != NULL)) {
-                    answer = 1;
-                }
+    
+    do{
+        if(SoftSerial.available() > 0){    
+            next = SoftSerial.read();
+            if(strstr(in, "+CMGL") && x > 12) {
+                Message *msg = new Message();
+                msg->index = msgindex;
+                msg->body = (char*)malloc(RECORD_LENGTH * sizeof(char));
+                strcpy(msg->body, in);
+                x = 0;
+                messagebuffer[msgindex] = msg;
+                msgindex++;
+                Serial.print("new record [");
+                Serial.print(msg->index);
+                Serial.print("] = ");
+                Serial.print(msg->body);
+            } else {
+                x++;
             }
-            // Waits for the asnwer with time out
-        }while(millis() - previous < timeout);
-    } else {
-        Serial.println("null messagebuffer");
-    }
+            in[x] = next;
+            in[x+1] = '\0';
+            if((answer == 0) && (strstr(in, expected_answer) != NULL)) {
+                answer = 1;
+            }
+        }
+        // Waits for the asnwer with time out
+    }while(millis() - previous < timeout);
+
     Serial.println("Message dump");
-    for(int i = 0; i < messagecount; i++) {
+    for(int i = 0; i < msgindex; i++) {
         Serial.print("Message ");
         Serial.print(messagebuffer[i]->index);
         Serial.print("= ");
         Serial.println(messagebuffer[i]->body);
     }
+    
+    free(in);
+
     return answer;
 }
 
