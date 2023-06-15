@@ -59,6 +59,15 @@ struct Message {
   char* sender_number;
 };
 
+enum {
+  CMGL_INDEX = 0,
+  CMGL_STATUS = 1,
+  CMGL_SENDER_NUMBER = 2,
+  CMGL_SENDER_TEXT = 3,
+  CMGL_TIMESTAMP = 4,
+  CMGL_BODY = 5
+};
+
 /* texto Class */
 class textolib {
 

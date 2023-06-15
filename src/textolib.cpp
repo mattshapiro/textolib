@@ -69,19 +69,6 @@ void textolib::Initialize(int timeout) {
         delay(500);
 }
 
-/**************************Phone Calls**************************
-void textolib::PhoneCall(const char* PhoneNumber) {
-  char aux_str[30];
-
-  sprintf(aux_str, "ATD%s;", PhoneNumber);
-  sendATcommand(aux_str, "OK", 10000);
-
-  delay(20000);
-
-  SoftSerial.println("AT+CHUP");            // disconnects the existing call
-  Serial.print("Call disconnected\n");
-}*/
-
 /**************************SMS sending and receiving message **************************/
 //SMS sending short message
 bool textolib::SendingShortMessage(const char* PhoneNumber,const char* Message){
@@ -342,11 +329,126 @@ bool textolib::GPSPositioning(){
     return true;
 }
 
-/**************************Other functions**************************/
-Message parseMessages(char* in) {
-    if(in != NULL) {
+bool isLineBreak(char* in, int x) {
+    if(x > 0 && in[x] == '\n' && in[x-1] == '\r') return true;
+    return false;
+}
 
+/**************************Other functions**************************/
+Message * parseMessage(char* in) {
+    // sample in string
+    //   0,    1,         2,          3,     4  // entry index
+    // : 0,"REC READ","+17209792908","","23/05/12,14:55:21-16"\r\n
+    // solo 1\r\n
+    // +CMGL
+    Message *msg;
+    int entryIndex = 0;
+    bool body = false;
+    char temp[256];
+
+
+    if(in != NULL && strlen(in) > 0) {
+        int index = 0, tempdex = 0;
+        msg = new Message();
+        msg->index = -1;
+        do {
+            // do not look for delimiters within the body of the message
+            if(!body) {
+                int initialIndex = entryIndex;
+                if(isLineBreak(in, index)) {
+                    body = true;
+                    entryIndex++;
+                }
+                // ignore commas within a timestamp (which is terminated by a line break)
+                if(initialIndex != CMGL_TIMESTAMP && in[index] == ',') {
+                    entryIndex++;
+                    index++;
+                }
+                if(initialIndex != entryIndex) {
+                    // entry terminated - record & reset temp string
+                    temp[tempdex] = '\0';
+                    switch(initialIndex) {
+                        case CMGL_INDEX: {
+                            char asciibuf[4];
+                            char ch;
+                            int a = 0, b = 0;
+                            // strip nonnumeric chars - why am I doing this???
+                            do {
+                                ch = temp[a];
+                                a++;
+                                if((ch >= 48 && ch <= 57) || ch == 0) {
+                                    // numeric ascii or null
+                                    asciibuf[b] = ch;
+                                    b++;
+                                }
+                            } while(ch != 0 && b <= 4);
+                            msg->index = atoi(asciibuf);
+                            break;
+                        }
+                        case CMGL_STATUS: {
+                            break;
+                        }
+                        case CMGL_SENDER_NUMBER: {
+                            msg->sender_number = (char*)malloc(tempdex * sizeof(char));
+                            strncpy(msg->sender_number, temp, tempdex);
+                            msg->sender_number[tempdex] = '\0';
+                            break;
+                        }
+                        case CMGL_SENDER_TEXT: {
+                            break;
+                        }
+                        case CMGL_TIMESTAMP: {
+                            msg->timestamp = (char*)malloc(tempdex * sizeof(char));
+                            strncpy(msg->timestamp, temp, tempdex);
+                            msg->timestamp[tempdex] = '\0';
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                    tempdex = 0;
+                }
+            }
+            temp[tempdex] = in[index];
+            index++;
+            tempdex++;
+        } while(in[index] != '\0');
+
+        if(msg->index == -1 || msg->sender_number == NULL || msg->timestamp == NULL) {
+            // header parse failed
+            Serial.println("HEADER PARSE FAILED");
+            if(msg->sender_number != NULL) {
+                free(msg->sender_number);
+            }
+            if(msg->timestamp != NULL) {
+                free(msg->timestamp);
+            }
+            delete(msg);
+            msg = NULL;
+        } else {
+            // parse the body
+            if(tempdex >= 6) {
+                tempdex -= 6; // remove final line break & delimiter ("+CGML")
+                msg->body = (char*)malloc(tempdex * sizeof(char));
+                strncpy(msg->body, temp+1, tempdex); // offset by one to skip the line break
+                msg->body[tempdex] = '\0';
+            } else {
+                Serial.println("BODY PARSE FAILED");
+                if(msg->body != NULL) {
+                    free(msg->body);
+                }
+                if(msg->sender_number != NULL) {
+                    free(msg->sender_number);
+                }
+                if(msg->timestamp != NULL) {
+                    free(msg->timestamp);
+                }
+                delete(msg);
+                msg = NULL;
+            }
+        }
     }
+    return msg;
 }
 
 // populate list of messages based on response of AT+CGML="ALL"
@@ -355,7 +457,7 @@ uint8_t textolib::getMessages(const char* group, const char* expected_answer, Me
     
     int previous,
         answer = 0,
-        x = 0, msgindex = 0;
+        x = 0, streamindex = 0, msgindex = 0;
 
     char * in;
     char next;
@@ -375,39 +477,49 @@ uint8_t textolib::getMessages(const char* group, const char* expected_answer, Me
     do{
         if(SoftSerial.available() > 0){    
             next = SoftSerial.read();
-            if(strstr(in, "+CMGL") && x > 12) {
-                Message *msg = new Message();
-                msg->index = msgindex;
-                msg->body = (char*)malloc(RECORD_LENGTH * sizeof(char));
-                strcpy(msg->body, in);
+            
+            streamindex++;
+            in[x] = next;
+            in[x+1] = '\0';
+
+            if(strstr(in, "+CMGL") && streamindex > 12) {
+                Message *msg = parseMessage(in);
                 x = 0;
-                messagebuffer[msgindex] = msg;
-                msgindex++;
-                Serial.print("new record [");
-                Serial.print(msg->index);
-                Serial.print("] = ");
-                Serial.print(msg->body);
+                if(msg != NULL) {
+                    messagebuffer[msgindex] = msg;
+                    msgindex++;
+                }
             } else {
                 x++;
             }
-            in[x] = next;
-            in[x+1] = '\0';
+
             if((answer == 0) && (strstr(in, expected_answer) != NULL)) {
                 answer = 1;
             }
         }
         // Waits for the asnwer with time out
     }while(millis() - previous < timeout);
+    
+    free(in);
 
-    Serial.println("Message dump");
+    if(msgindex != messagecount) { 
+        Serial.println("COUNT MISMATCH"); 
+        Serial.print("expected ");
+        Serial.print(messagecount);
+        Serial.print(" actual ");
+        Serial.println(msgindex);
+    }
+
     for(int i = 0; i < msgindex; i++) {
         Serial.print("Message ");
         Serial.print(messagebuffer[i]->index);
-        Serial.print("= ");
+        Serial.print(" from ");
+        Serial.print(messagebuffer[i]->sender_number);
+        Serial.print(" @(");
+        Serial.print(messagebuffer[i]->timestamp);
+        Serial.println("):");
         Serial.println(messagebuffer[i]->body);
     }
-    
-    free(in);
 
     return answer;
 }
@@ -416,35 +528,32 @@ uint8_t textolib::getMessages(const char* group, const char* expected_answer, Me
 uint8_t textolib::getATcommandResponse(const char* ATcommand, const char* expected_answer, char* responseBuffer, unsigned int bufferLen, unsigned int timeout) {
     uint8_t x=0,  answer=0;
     unsigned long previous;
-    char in = NULL;
-
+    char in;
+    
     memset(responseBuffer, '\0', bufferLen);    // Initialize the string
 
     while( SoftSerial.available() > 0) SoftSerial.read();    // Clean the input buffer
 
     SoftSerial.println(ATcommand);    // Send the AT command    
 
-    x = 0;
     previous = millis();
- 
  // this loop waits for the answer
     do{
         if(SoftSerial.available() > 0){    
             // if there are data in the UART input buffer, reads it and checks for the asnwer
             in = SoftSerial.read();
-            if(x < bufferLen) {
-                responseBuffer[x++] = in;
-                if(strstr(responseBuffer, expected_answer) != NULL) {
-                    answer = 1;
-                }
+            Serial.print(in);
+            responseBuffer[x] = in;
+            if(strstr(responseBuffer, expected_answer) != NULL) {
+                answer = 1;
             }
+            x++;
         }
          // Waits for the asnwer with time out
-    }while((in != '\0') && ((millis() - previous) < timeout));
-    Serial.print("message response: ");
-    Serial.println(responseBuffer);
+    }while((x < bufferLen) && ((millis() - previous) < timeout));
     return answer;
 }
+
 uint8_t textolib::sendATcommand(const char* ATcommand, const char* expected_answer, unsigned int timeout) {
 
     uint8_t x=0,  answer=0;
